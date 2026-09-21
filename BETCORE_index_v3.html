@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BetCore — Сканер букмекерської лінії</title>
+<style>
+:root{
+  --bg:#071018;--p:#0d1923;--p2:#101f2c;--l:#203241;
+  --t:#eef5f8;--m:#8ea3b2;--a:#55e39b;--w:#ffd166;--d:#ff6b6b
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:linear-gradient(135deg,#061017,#0a1620 55%,#071018);
+  color:var(--t);font-family:Inter,system-ui,sans-serif
+}
+header{
+  min-height:70px;border-bottom:1px solid var(--l);display:flex;
+  align-items:center;justify-content:space-between;padding:0 5%;
+  background:#071018ee;position:sticky;top:0;z-index:5
+}
+.logo{font-size:24px;font-weight:900}.logo span{color:var(--a)}
+.status{font-size:13px}.ok{color:var(--a)}.err{color:var(--d)}.warn{color:var(--w)}
+main{max-width:1250px;margin:auto;padding:28px 5% 60px}
+.hero{display:flex;justify-content:space-between;gap:20px;align-items:end}
+.ey{font-size:12px;color:var(--a);font-weight:800;letter-spacing:1.5px;text-transform:uppercase}
+.hero h1{font-size:40px;margin:8px 0}
+.hero p{color:var(--m);max-width:760px;line-height:1.5}
+.btn,.input{
+  border:1px solid var(--l);background:var(--p);color:var(--t);
+  padding:12px 14px;border-radius:10px;font-size:15px
+}
+.btn{background:#55e39b12;border-color:var(--a);color:var(--a);font-weight:800;cursor:pointer}
+.btn:disabled{opacity:.5;cursor:wait}
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin:25px 0}
+.input{min-width:190px}
+.summary{
+  display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 18px;color:var(--m);font-size:13px
+}
+.pill{border:1px solid var(--l);background:var(--p);padding:7px 10px;border-radius:9px}
+.card{
+  background:var(--p);border:1px solid var(--l);border-radius:16px;
+  margin:14px 0;overflow:hidden
+}
+.matchHead{
+  padding:18px;border-bottom:1px solid var(--l);
+  display:flex;justify-content:space-between;gap:15px
+}
+.matchName{font-size:20px;font-weight:900}
+.meta{color:var(--m);font-size:13px;line-height:1.6;margin-top:5px}
+.bookmakerCount{color:var(--a);font-size:12px;white-space:nowrap}
+.section{padding:14px 18px 18px}
+.sectionTitle{font-weight:900;margin-bottom:10px}
+.tableWrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:620px}
+th,td{padding:10px 9px;border-bottom:1px solid var(--l);text-align:center}
+th{color:var(--m);font-size:11px;text-transform:uppercase;font-weight:700}
+th:first-child,td:first-child{text-align:left}
+.price{font-weight:900;font-size:16px}
+.best{color:var(--a)}
+.bestTag{font-size:10px;border:1px solid var(--a);border-radius:5px;padding:2px 4px;margin-left:4px;color:var(--a)}
+.marketInfo{
+  display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:var(--m);font-size:12px
+}
+.info{padding:6px 8px;border:1px solid var(--l);border-radius:7px}
+.empty,.notice{
+  padding:15px;border:1px solid var(--l);border-radius:12px;color:var(--m);line-height:1.5
+}
+.notice{margin-top:14px}
+.small{font-size:12px;color:var(--m)}
+.engine{padding:14px 18px 18px;border-top:1px solid var(--l);background:#09151e}
+.engineGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.engineBox{border:1px solid var(--l);border-radius:10px;padding:10px;background:var(--p2)}
+.engineLabel{font-size:11px;color:var(--m);margin-bottom:4px}.engineValue{font-weight:900}
+.engineSkip{color:var(--w)}.engineGood{color:var(--a)}.engineBad{color:var(--d)}
+.engineReasons{margin-top:10px;color:var(--m);font-size:12px;line-height:1.5}
+@media(max-width:760px){.engineGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+  .hero{display:block}.hero h1{font-size:34px}
+  .matchHead{display:block}.bookmakerCount{margin-top:8px}
+  .input{width:100%}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">Bet<span>Core</span></div>
+  <div id="status" class="status">● API не підключено</div>
+</header>
+
+<main>
+<section class="hero">
+  <div>
+    <div class="ey">Сканер букмекерської лінії</div>
+    <h1>Матчі → букмекери → ціна</h1>
+    <p>
+      BetCore показує матчі, на які є доступні коефіцієнти, і групує всі
+      отримані букмекерські лінії всередині одного матчу. Час — Europe/Kyiv.
+    </p>
+  </div>
+  <button id="scanBtn" class="btn" onclick="loadOdds()">↻ Оновити лінію</button>
+</section>
+
+<div class="controls">
+  <select id="sport" class="input">
+    <option value="soccer_epl">Англія · Премʼєр-ліга</option>
+    <option value="soccer_uefa_champs_league">Європа · Ліга чемпіонів</option>
+    <option value="soccer_spain_la_liga">Іспанія · Ла Ліга</option>
+    <option value="soccer_germany_bundesliga">Німеччина · Бундесліга</option>
+    <option value="soccer_italy_serie_a">Італія · Серія А</option>
+    <option value="soccer_france_ligue_one">Франція · Ліга 1</option>
+  </select>
+
+  <select id="markets" class="input">
+    <option value="h2h,totals,spreads">1X2 + Тотали + Фори</option>
+    <option value="h2h">1X2</option>
+    <option value="totals">Тотали</option>
+    <option value="spreads">Фори</option>
+  </select>
+
+  <select id="regions" class="input">
+    <option value="eu">Європейські букмекери</option>
+    <option value="uk">Британські букмекери</option>
+    <option value="us">Американські букмекери</option>
+  </select>
+
+  <select id="horizon" class="input">
+    <option value="24h">Найближчі 24 години</option>
+    <option value="3d">Найближчі 3 дні</option>
+    <option value="7d">Найближчі 7 днів</option>
+    <option value="all">Усі майбутні матчі</option>
+  </select>
+</div>
+
+<div id="summary" class="summary"></div>
+<div id="list"></div>
+
+<div id="notice" class="notice">
+  Готово. Натисни «Оновити лінію».
+</div>
+</main>
+
+<script>
+const API_BASE = 'https://betcore-7ws8.onrender.com';
+let latestRows = [];
+
+function escapeHtml(value){
+  return String(value ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+    .replace(/'/g,'&#039;');
+}
+
+function kyivTime(iso){
+  if(!iso) return '';
+  return new Date(iso).toLocaleString('uk-UA',{
+    timeZone:'Europe/Kyiv',
+    day:'2-digit',month:'2-digit',year:'numeric',
+    hour:'2-digit',minute:'2-digit'
+  });
+}
+
+function marketName(key){
+  return ({
+    h2h:'1X2',
+    totals:'Тотали',
+    spreads:'Фори'
+  })[key] || key;
+}
+
+function pointLabel(point){
+  return point === null || point === undefined || point === '' ? '' : String(point);
+}
+
+function calculateOverround(outcomes){
+  const valid = outcomes.filter(x => Number(x.price) > 1);
+  if(!valid.length) return null;
+  const sum = valid.reduce((s,x) => s + 1 / Number(x.price), 0);
+  return sum > 0 ? sum : null;
+}
+
+function noVigRows(outcomes){
+  const overround = calculateOverround(outcomes);
+  if(!overround) return outcomes.map(x => ({...x,noVig:null,fairOdds:null}));
+  return outcomes.map(x => {
+    const raw = 1 / Number(x.price);
+    const p = raw / overround;
+    return {...x,noVig:p,fairOdds:1/p};
+  });
+}
+
+function bestByKey(outcomes){
+  const map = new Map();
+  for(const x of outcomes){
+    const key = `${x.name}__${x.point ?? ''}`;
+    if(!map.has(key) || Number(x.price) > Number(map.get(key).price)){
+      map.set(key,x);
+    }
+  }
+  return map;
+}
+
+function renderH2H(market){
+  const rows = market.bookmakers || [];
+  const all = rows.flatMap(b => b.outcomes || []);
+  const names = [];
+  for(const x of all){
+    if(!names.includes(x.name)) names.push(x.name);
+  }
+
+  const best = bestByKey(all);
+
+  return `
+    <div class="section">
+      <div class="sectionTitle">1X2</div>
+      <div class="tableWrap">
+        <table>
+          <thead><tr>
+            <th>Букмекер</th>
+            ${names.map((n,i)=>`<th>${i===0?'1':i===1?'X':'2'}<br>${escapeHtml(n)}</th>`).join('')}
+            <th>Маржа</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(b=>{
+              const values = b.outcomes || [];
+              const byName = new Map(values.map(x=>[x.name,x]));
+              const overround = calculateOverround(values);
+              return `<tr>
+                <td>${escapeHtml(b.bookmaker)}</td>
+                ${names.map(n=>{
+                  const x=byName.get(n);
+                  if(!x) return '<td>—</td>';
+                  const key=`${x.name}__${x.point ?? ''}`;
+                  const isBest=best.get(key) === x;
+                  return `<td class="price ${isBest?'best':''}">${Number(x.price).toFixed(2)}${isBest?'<span class="bestTag">MAX</span>':''}</td>`;
+                }).join('')}
+                <td>${overround ? ((overround-1)*100).toFixed(2)+'%' : '—'}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="marketInfo">
+        ${[...best.values()].map(x=>`
+          <span class="info">Найкращий ${escapeHtml(x.name)}: <b>${Number(x.price).toFixed(2)}</b> · ${escapeHtml(x.bookmaker)}</span>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+function renderGenericMarket(marketKey,market){
+  const rows=market.bookmakers || [];
+  const groups=new Map();
+
+  for(const b of rows){
+    for(const x of b.outcomes || []){
+      const p=pointLabel(x.point);
+      const key=`${x.name}__${p}`;
+      if(!groups.has(key)) groups.set(key,{name:x.name,point:x.point,bookmakers:[]});
+      groups.get(key).bookmakers.push({bookmaker:b.bookmaker,price:x.price});
+    }
+  }
+
+  return [...groups.values()].map(group=>{
+    const best=Math.max(...group.bookmakers.map(x=>Number(x.price)));
+    return `
+      <div class="section">
+        <div class="sectionTitle">${escapeHtml(marketName(marketKey))}${group.point!==null&&group.point!==undefined?' · '+escapeHtml(group.point):''} · ${escapeHtml(group.name)}</div>
+        <div class="tableWrap"><table>
+          <thead><tr><th>Букмекер</th><th>Коефіцієнт</th><th>Ринкова ймовірність</th></tr></thead>
+          <tbody>
+            ${group.bookmakers.map(x=>{
+              const p=1/Number(x.price);
+              return `<tr>
+                <td>${escapeHtml(x.bookmaker)}</td>
+                <td class="price ${Number(x.price)===best?'best':''}">${Number(x.price).toFixed(2)}${Number(x.price)===best?'<span class="bestTag">MAX</span>':''}</td>
+                <td>${(p*100).toFixed(2)}%</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table></div>
+      </div>`;
+  }).join('');
+}
+
+function renderEngine(engine){
+  const e=engine||{};
+  const market=e.marketNoVig;
+  const reasons=(e.noBetGate?.reasons||[]).map(x=>`<li>${escapeHtml(x)}</li>`).join('');
+  const fair=e.fairProbability==null?'UNKNOWN':(Number(e.fairProbability)*100).toFixed(2)+'%';
+  const fairOdds=e.fairOdds==null?'UNKNOWN':Number(e.fairOdds).toFixed(2);
+  const edge=e.edge==null?'UNKNOWN':(Number(e.edge)*100).toFixed(2)+'%';
+  return `<div class="engine">
+    <div class="sectionTitle">BETCORE ENGINE</div>
+    <div class="engineGrid">
+      <div class="engineBox"><div class="engineLabel">Match Quality</div><div class="engineValue">${e.matchQuality==null?'UNKNOWN':e.matchQuality+'/100'}</div></div>
+      <div class="engineBox"><div class="engineLabel">Fair Probability</div><div class="engineValue">${fair}</div></div>
+      <div class="engineBox"><div class="engineLabel">Fair Odds</div><div class="engineValue">${fairOdds}</div></div>
+      <div class="engineBox"><div class="engineLabel">Edge</div><div class="engineValue">${edge}</div></div>
+      <div class="engineBox"><div class="engineLabel">Підтвердження</div><div class="engineValue">${e.independentConfirmations||0}/2</div></div>
+      <div class="engineBox"><div class="engineLabel">Trap Score</div><div class="engineValue">${e.trapScore==null?'UNKNOWN':e.trapScore}</div></div>
+      <div class="engineBox"><div class="engineLabel">No-Bet Gate</div><div class="engineValue engineBad">${escapeHtml(e.noBetGate?.status||'UNKNOWN')}</div></div>
+      <div class="engineBox"><div class="engineLabel">Рішення</div><div class="engineValue engineSkip">${escapeHtml(e.decision||'SKIP')}</div></div>
+    </div>
+    ${market?`<div class="engineReasons">Ринковий no-vig (діагностика): маржа <b>${Number(market.margin).toFixed(2)}%</b>. Fair Probability BETCORE поки не підставляється з ринку.</div>`:''}
+    <div class="engineReasons"><b>Причини No-Bet:</b><ul>${reasons}</ul></div>
+  </div>`;
+}
+
+function renderMatch(match){
+  const markets=match.markets || {};
+  const marketKeys=Object.keys(markets);
+
+  return `
+    <article class="card">
+      <div class="matchHead">
+        <div>
+          <div class="matchName">${escapeHtml(match.home)} — ${escapeHtml(match.away)}</div>
+          <div class="meta">
+            ${escapeHtml(match.league)} · ${kyivTime(match.commence)} · ПРЕМАТЧ
+          </div>
+        </div>
+        <div class="bookmakerCount">${match.bookmakers.length} БК з коефіцієнтами</div>
+      </div>
+
+      ${renderEngine(match.engine)}
+
+      ${marketKeys.map(key=>{
+        if(key==='h2h') return renderH2H(markets[key]);
+        return renderGenericMarket(key,markets[key]);
+      }).join('')}
+    </article>`;
+}
+
+function applyHorizon(rows){
+  const now=Date.now();
+  const mode=document.getElementById('horizon').value;
+  let end=Infinity;
+  if(mode==='24h') end=now+24*60*60*1000;
+  if(mode==='3d') end=now+3*24*60*60*1000;
+  if(mode==='7d') end=now+7*24*60*60*1000;
+
+  return rows
+    .filter(x=>{
+      const t=new Date(x.commence).getTime();
+      return Number.isFinite(t) && t>=now && t<=end;
+    })
+    .sort((a,b)=>new Date(a.commence)-new Date(b.commence));
+}
+
+function rebuild(){
+  const list=document.getElementById('list');
+  const summary=document.getElementById('summary');
+  const filtered=applyHorizon(latestRows);
+
+  const byMatch=new Map();
+  for(const row of filtered){
+    if(!byMatch.has(row.id)){
+      byMatch.set(row.id,{
+        id:row.id,league:row.league,commence:row.commence,
+        home:row.home,away:row.away,bookmakers:new Set(),markets:{}
+      });
+    }
+    const m=byMatch.get(row.id);
+    m.bookmakers.add(row.bookmaker);
+    if(!m.markets[row.market]) m.markets[row.market]={bookmakers:new Map()};
+    if(!m.markets[row.market].bookmakers.has(row.bookmaker)){
+      m.markets[row.market].bookmakers.set(row.bookmaker,{
+        bookmaker:row.bookmaker,outcomes:[]
+      });
+    }
+    m.markets[row.market].bookmakers.get(row.bookmaker).outcomes.push({
+      name:row.name,point:row.point,price:row.price
+    });
+  }
+
+  const matches=[...byMatch.values()].map(m=>({
+    ...m,
+    bookmakers:[...m.bookmakers],
+    markets:Object.fromEntries(Object.entries(m.markets).map(([k,v])=>[
+      k,{bookmakers:[...v.bookmakers.values()]}
+    ]))
+  }));
+
+  summary.innerHTML=`
+    <span class="pill">Матчів: <b>${matches.length}</b></span>
+    <span class="pill">Букмекерських позицій: <b>${filtered.length}</b></span>
+    <span class="pill">Час: <b>Київ</b></span>
+    <span class="pill">Тільки <b>ПРЕМАТЧ</b></span>
+  `;
+
+  if(!matches.length){
+    list.innerHTML='<div class="empty">У вибраному часовому горизонті немає майбутніх матчів із доступними коефіцієнтами.</div>';
+    return;
+  }
+
+  list.innerHTML=matches.map(renderMatch).join('');
+}
+
+async function checkServer(){
+  try{
+    const r=await fetch(`${API_BASE}/health`,{cache:'no-store'});
+    const d=await r.json();
+    if(!r.ok || !d.ok) throw new Error();
+    document.getElementById('status').innerHTML='<span class="ok">● API підключено</span>';
+  }catch{
+    document.getElementById('status').innerHTML='<span class="err">● API недоступний</span>';
+  }
+}
+
+async function loadOdds(){
+  const sport=document.getElementById('sport').value;
+  const markets=document.getElementById('markets').value;
+  const regions=document.getElementById('regions').value;
+  const list=document.getElementById('list');
+  const notice=document.getElementById('notice');
+  const btn=document.getElementById('scanBtn');
+
+  btn.disabled=true;
+  list.innerHTML='<div class="empty">Завантаження букмекерської лінії…</div>';
+
+  try{
+    const url=`${API_BASE}/api/odds?sport=${encodeURIComponent(sport)}&markets=${encodeURIComponent(markets)}&regions=${encodeURIComponent(regions)}`;
+    const r=await fetch(url,{cache:'no-store'});
+    const d=await r.json();
+
+    if(!r.ok) throw new Error(d.message || d.error || `HTTP ${r.status}`);
+
+    latestRows=Array.isArray(d.rows)?d.rows:[];
+
+    document.getElementById('status').innerHTML='<span class="ok">● API підключено</span>';
+    rebuild();
+
+    notice.innerHTML=
+      `Отримано <b>${Number(d.events||0)}</b> матчів, `+
+      `<b>${Number(d.bookmakers||0)}</b> букмекерів і `+
+      `<b>${latestRows.length}</b> коефіцієнтів. `+
+      `Показуємо всі отримані позиції без штучного ліміту. `+
+      (d.fallbackUsed
+        ? '<span class="warn"> Додатковий запит: API не віддав обрані ринки, тому використано 1X2.</span>'
+        : '');
+  }catch(e){
+    latestRows=[];
+    list.innerHTML=`<div class="empty err">${escapeHtml(e.message)}</div>`;
+    notice.innerHTML='<span class="warn">Не вдалося отримати букмекерську лінію.</span> Перевір Render API.';
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+document.getElementById('horizon').addEventListener('change',rebuild);
+window.addEventListener('load',()=>{
+  checkServer();
+  loadOdds();
+});
+</script>
+</body>
+</html>
