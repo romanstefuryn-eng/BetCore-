@@ -1264,7 +1264,7 @@ async function getOdds(req, res) {
       eventsDiscovered: futureEvents.length,
       fixtureSource: fixtureResult.source,
       fixtureEventsRaw: fixtureResult.events?.length || 0,
-      fixtureEventsAllowed: sofaFixtures.length,
+      fixtureEventsAllowed: fixtureMatches.length,
       oddsUniverseEvents: oddsUniverse.length,
       mergedEvents: merged.length,
       futureEvents: futureMerged.length,
