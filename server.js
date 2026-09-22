@@ -250,16 +250,38 @@ function scoreFixtureOddsMatch(fixture, odds) {
   const ft = new Date(fixture.commence).getTime();
   const ot = new Date(odds.commence).getTime();
   if (!Number.isFinite(ft) || !Number.isFinite(ot)) return null;
+
   const diffMin = Math.abs(ft - ot) / 60000;
   const exactHome = normalizeTeamName(fixture.home) === normalizeTeamName(odds.home);
   const exactAway = normalizeTeamName(fixture.away) === normalizeTeamName(odds.away);
-  if (exactHome && exactAway && diffMin <= 90) return { score: 1, homeScore, awayScore, diffMin, confidence: 'EXACT' };
-  if (diffMin > 45) return null;
-  if (homeScore < 0.78 || awayScore < 0.78) return null;
-  const timeScore = Math.max(0, 1 - diffMin / 45);
-  const score = homeScore * 0.42 + awayScore * 0.42 + timeScore * 0.16;
-  if (score < 0.82) return null;
-  return { score, homeScore, awayScore, diffMin, confidence: score >= 0.94 ? 'HIGH' : 'MEDIUM' };
+
+  // Providers can use different kickoff timestamps after reschedules/timezone updates.
+  // An exact team pair is a much stronger identifier than the displayed kickoff minute.
+  if (exactHome && exactAway && diffMin <= 24 * 60) {
+    const timeScore = Math.max(0, 1 - diffMin / (24 * 60));
+    const score = 0.92 + timeScore * 0.08;
+    return { score, homeScore, awayScore, diffMin, confidence: diffMin <= 90 ? 'EXACT' : 'EXACT_TEAMS' };
+  }
+
+  // Handle provider-specific names such as "Leuven" vs "OH Leuven".
+  if (homeScore >= 0.82 && awayScore >= 0.82 && diffMin <= 360) {
+    const timeScore = Math.max(0, 1 - diffMin / 360);
+    const score = homeScore * 0.44 + awayScore * 0.44 + timeScore * 0.12;
+    if (score >= 0.80) {
+      return { score, homeScore, awayScore, diffMin, confidence: score >= 0.92 ? 'HIGH' : 'MEDIUM' };
+    }
+  }
+
+  // Close-kickoff fallback for abbreviated provider names.
+  if (diffMin <= 45 && homeScore >= 0.72 && awayScore >= 0.72) {
+    const timeScore = Math.max(0, 1 - diffMin / 45);
+    const score = homeScore * 0.42 + awayScore * 0.42 + timeScore * 0.16;
+    if (score >= 0.72) {
+      return { score, homeScore, awayScore, diffMin, confidence: score >= 0.90 ? 'HIGH' : 'MEDIUM' };
+    }
+  }
+
+  return null;
 }
 
 function mergeOddsIntoFixtures(fixtures, oddsMatches) {
