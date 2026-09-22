@@ -7,12 +7,15 @@ const { URL } = require('url');
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.ODDS_API_KEY || '';
 const ODDS_API_BASE = process.env.ODDS_API_BASE || 'https://api.the-odds-api.com/v4';
-const MAX_SOCCER_SPORTS = Number(process.env.BETCORE_MAX_SOCCER_SPORTS || 24);
+const MAX_ODDS_SPORTS = Number(process.env.BETCORE_MAX_ODDS_SPORTS || 16);
+const MAX_MATCHES = Number(process.env.BETCORE_MAX_MATCHES || 300);
 const CACHE_MS = Number(process.env.BETCORE_CACHE_MS || 90000);
+const EVENTS_CACHE_MS = Number(process.env.BETCORE_EVENTS_CACHE_MS || 600000);
 const HISTORY_FILE = path.join(__dirname, 'betcore_odds_history.json');
 
 const cache = new Map();
 let sportsCache = { at: 0, data: [] };
+const eventsCache = new Map();
 let history = loadHistory();
 
 function send(res, status, type, body, extraHeaders = {}) {
@@ -100,16 +103,33 @@ function isSoccer(s) {
 }
 
 function selectSoccerSports(allSports) {
-  const soccer = allSports.filter(isSoccer).sort((a,b) => {
+  return allSports.filter(isSoccer).sort((a,b) => {
     const p = sportPriority(a) - sportPriority(b);
     if (p) return p;
     return String(a.title).localeCompare(String(b.title));
   });
-  return soccer.slice(0, MAX_SOCCER_SPORTS);
 }
 
-async function requestOdds(sport, regions, markets) {
-  const endpoint = `${ODDS_API_BASE}/sports/${encodeURIComponent(sport)}/odds/?apiKey=${encodeURIComponent(API_KEY)}&regions=${encodeURIComponent(regions)}&markets=${encodeURIComponent(markets)}&oddsFormat=decimal`;
+function horizonWindow(mode) {
+  const hours = mode === '24h' ? 24 : mode === '3d' ? 72 : 168;
+  const from = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const to = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+  return { from, to };
+}
+
+async function requestEvents(sport, from, to) {
+  const key = `events:${sport}:${from.slice(0,13)}:${to.slice(0,13)}`;
+  const cached = cacheGet(key);
+  if (cached) return cached;
+  const endpoint = `${ODDS_API_BASE}/sports/${encodeURIComponent(sport)}/events/?apiKey=${encodeURIComponent(API_KEY)}&dateFormat=iso&commenceTimeFrom=${encodeURIComponent(from)}&commenceTimeTo=${encodeURIComponent(to)}`;
+  const result = await apiGet(endpoint);
+  const value = { data: Array.isArray(result.data) ? result.data : [], headers: result.headers };
+  cacheSet(key, value);
+  return value;
+}
+
+async function requestOdds(sport, regions, markets, from, to) {
+  const endpoint = `${ODDS_API_BASE}/sports/${encodeURIComponent(sport)}/odds/?apiKey=${encodeURIComponent(API_KEY)}&regions=${encodeURIComponent(regions)}&markets=${encodeURIComponent(markets)}&oddsFormat=decimal&commenceTimeFrom=${encodeURIComponent(from)}&commenceTimeTo=${encodeURIComponent(to)}`;
   return apiGet(endpoint);
 }
 
@@ -290,19 +310,54 @@ async function getOdds(req, res) {
 
   let sports;
   try { sports = await getSports(); } catch (e) { return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({ error:e.message })); }
-  let targets;
-  if (scope === 'sport' && sport) targets = sports.filter(s => s.sport_key === sport);
-  else targets = selectSoccerSports(sports);
-
-  const rows = [];
+  const allSoccer = selectSoccerSports(sports);
+  let targets = scope === 'sport' && sport ? allSoccer.filter(s => s.sport_key === sport) : allSoccer;
+  const { from, to } = horizonWindow(horizon);
   const errors = [];
-  let remaining = null, used = null;
-  const concurrency = 4;
-  for (let i=0; i<targets.length; i+=concurrency) {
-    const batch = targets.slice(i, i+concurrency);
+  const discovered = [];
+  const discoveryConcurrency = 8;
+
+  // First discover events. /events does not consume quota, so we can find what is
+  // actually scheduled today/tomorrow before spending odds credits.
+  for (let i=0; i<targets.length; i+=discoveryConcurrency) {
+    const batch = targets.slice(i, i+discoveryConcurrency);
     const results = await Promise.all(batch.map(async s => {
-      try { return { s, r: await requestOdds(s.sport_key, regions, markets) }; }
-      catch (e) { errors.push({ sport:s.sport_key, title:s.title, error:e.message }); return null; }
+      try { return { s, r: await requestEvents(s.sport_key, from, to) }; }
+      catch (e) { errors.push({ stage:'events', sport:s.sport_key, title:s.title, error:e.message }); return null; }
+    }));
+    for (const x of results) {
+      if (!x) continue;
+      for (const ev of x.r.data) discovered.push({ ...ev, sport_title:x.s.title, sport_group:x.s.group });
+    }
+  }
+
+  const futureEvents = discovered.filter(e => {
+    const t = new Date(e.commence_time).getTime();
+    return Number.isFinite(t) && t >= Date.now() - 60*1000 && t <= new Date(to).getTime();
+  });
+  const bySport = new Map();
+  for (const ev of futureEvents) {
+    if (!bySport.has(ev.sport_key)) bySport.set(ev.sport_key, []);
+    bySport.get(ev.sport_key).push(ev);
+  }
+  const activeTargets = targets.filter(s => bySport.has(s.sport_key));
+  activeTargets.sort((a,b) => {
+    const ca = bySport.get(a.sport_key).length, cb = bySport.get(b.sport_key).length;
+    if (cb !== ca) return cb - ca;
+    return sportPriority(a) - sportPriority(b);
+  });
+
+  // Odds are the quota-consuming part. Query only leagues that actually have
+  // events in the selected horizon, prioritising leagues with the most events.
+  const oddsTargets = activeTargets.slice(0, MAX_ODDS_SPORTS);
+  const rows = [];
+  let remaining = null, used = null;
+  const oddsConcurrency = 4;
+  for (let i=0; i<oddsTargets.length; i+=oddsConcurrency) {
+    const batch = oddsTargets.slice(i, i+oddsConcurrency);
+    const results = await Promise.all(batch.map(async s => {
+      try { return { s, r: await requestOdds(s.sport_key, regions, markets, from, to) }; }
+      catch (e) { errors.push({ stage:'odds', sport:s.sport_key, title:s.title, error:e.message }); return null; }
     }));
     for (const x of results) {
       if (!x) continue;
@@ -310,18 +365,32 @@ async function getOdds(req, res) {
       used = x.r.headers['x-requests-used'] ?? used;
       rows.push(...normalizeEvents(x.r.data, x.s));
     }
-    if (remaining !== null && Number(remaining) <= 2 && i + concurrency < targets.length) break;
+    if (remaining !== null && Number(remaining) <= 2 && i + oddsConcurrency < oddsTargets.length) break;
   }
 
-  const matches0 = groupMatches(rows);
-  const matches1 = filterFuture(matches0, horizon);
+  const oddsMatches = groupMatches(rows);
+  const oddsById = new Map(oddsMatches.map(m => [m.id, m]));
+  const eventMatches = futureEvents.map(e => ({
+    id:e.id, sport:e.sport_key, sportKey:e.sport_key, league:e.sport_title || e.sport_key,
+    commence:e.commence_time, home:e.home_team, away:e.away_team, bookmakers:[], markets:{}
+  }));
+  const merged = eventMatches.map(m => oddsById.get(m.id) ? { ...m, ...oddsById.get(m.id) } : m);
+  const matches1 = filterFuture(merged, horizon).slice(0, MAX_MATCHES);
   snapshot(matches1);
   const matches = matches1.map(m => ({ ...m, engine: buildEngine(m, history[m.id]) }));
+  const withOdds = matches.filter(m => Object.keys(m.markets || {}).length).length;
   const payload = {
     source:'The Odds API', fetchedAt:new Date().toISOString(), cached:false,
-    requested:{ scope, sport: sport || null, regions, markets, horizon },
-    coverage:{ footballSportsAvailable:sports.filter(isSoccer).length, sportsQueried:targets.length, sportsReturned:[...new Set(rows.map(x=>x.sportKey))].length, matches:matches.length, errors:errors.length },
-    errors:errors.slice(0,20), matches,
+    requested:{ scope, sport: sport || null, regions, markets, horizon, from, to },
+    coverage:{
+      footballSportsAvailable:allSoccer.length,
+      sportsDiscovered:activeTargets.length,
+      sportsWithOdds:oddsTargets.length,
+      sportsReturned:[...new Set(rows.map(x=>x.sportKey))].length,
+      eventsDiscovered:futureEvents.length, matches:matches.length, matchesWithOdds:withOdds,
+      errors:errors.length
+    },
+    errors:errors.slice(0,30), matches,
     quota:{ remaining, used }
   };
   cacheSet(key, payload);
@@ -343,7 +412,7 @@ async function handle(req,res) {
       if (!id) return send(res,400,'application/json; charset=utf-8',JSON.stringify({error:'id required'}));
       return send(res,200,'application/json; charset=utf-8',JSON.stringify({id,history:history[id] || []}));
     }
-    if (u.pathname === '/health') return send(res,200,'application/json; charset=utf-8',JSON.stringify({ok:true,service:'BetCore',version:'4.0',apiKeyConfigured:Boolean(API_KEY),historyMatches:Object.keys(history).length}));
+    if (u.pathname === '/health') return send(res,200,'application/json; charset=utf-8',JSON.stringify({ok:true,service:'BetCore',version:'4.1',apiKeyConfigured:Boolean(API_KEY),historyMatches:Object.keys(history).length}));
     if (u.pathname === '/' || u.pathname === '/index.html') return send(res,200,'text/html; charset=utf-8',html);
     return send(res,404,'text/plain; charset=utf-8','Not found');
   } catch(e) {
@@ -353,4 +422,4 @@ async function handle(req,res) {
 }
 
 const html = fs.readFileSync(path.join(__dirname,'index.html'),'utf8');
-http.createServer(handle).listen(PORT,()=>console.log(`BetCore 4.0 running on ${PORT}`));
+http.createServer(handle).listen(PORT,()=>console.log(`BetCore 4.1 running on ${PORT}`));
