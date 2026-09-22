@@ -1,18 +1,18 @@
-BETCORE 5.4 — API-Football fixture universe
+BETCORE v5.6 — MATCH MATCHING 2.0
 
-Files:
-- server.js — BetCore 5.4 with API-Football fixture source
-- index.html — existing BetCore UI
-- prediction.js — existing Prediction v1 MARKET BASELINE
+Changes:
+- More tolerant team normalization for provider naming differences.
+- Levenshtein + token similarity for team matching.
+- Competition/league similarity is included in fuzzy matching.
+- One-to-one fixture ↔ Odds API matching.
+- Ambiguous candidates are NOT auto-merged.
+- Added matchIdentity with API-Football ID, Odds API ID, team names, kickoff difference, score and confidence.
+- Added ambiguousFixtureMatches / diagnostics count.
+- Version 5.6.
 
-Required Render environment variables:
-- ODDS_API_KEY = existing The Odds API key
-- API_FOOTBALL_KEY = your API-Football key
-- BETCORE_FIXTURE_SOURCE = api-football
-
-Optional:
-- API_FOOTBALL_BASE = https://v3.football.api-sports.io
-
-The API-Football key is read only on the server. Do not put it in frontend code or GitHub.
-
-The Odds API remains the bookmaker-odds source. API-Football is used as the football fixture universe.
+Install:
+1. Extract the archive.
+2. Upload/replace server.js, index.html and prediction.js in the GitHub main branch.
+3. Render auto-deploys from GitHub.
+4. Open BetCore and press Оновити.
+5. Check coverage: «зіставлено джерела» should be > 0 when the same matches exist in both sources.

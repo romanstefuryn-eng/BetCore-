@@ -66,7 +66,7 @@ function apiGetWithHeaders(urlString, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, {
       headers: {
-        'User-Agent': 'BetCore/5.5',
+        'User-Agent': 'BetCore/5.6',
         'Accept': 'application/json',
         ...headers
       }
@@ -117,7 +117,7 @@ function fixtureStatusAllowed(event) {
 function apiFootballGet(urlString) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, { headers: {
-      'User-Agent': 'BetCore/5.5',
+      'User-Agent': 'BetCore/5.6',
       'Accept': 'application/json',
       'x-apisports-key': API_FOOTBALL_KEY
     }}, r => {
@@ -203,8 +203,8 @@ function normalizeTeamName(name) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/&/g, ' and ')
-    .replace(/\b(fc|fk|sc|cf|afc|club|women|woman|ladies|w|u19|u20|u21|u23|ii|b)\b/g, ' ')
-    .replace(/\b(reserves?|reserve)\b/g, ' ')
+    .replace(/\b(football|futebol|fc|fk|sc|cf|afc|club|women|woman|ladies|w|u19|u20|u21|u23|u18|u17|ii|b|reserves?|reserve|ec|esporte|esportivo|clube)\b/g, ' ')
+    .replace(/\b(deportivo|deportes)\b/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -214,6 +214,24 @@ function teamTokens(name) {
   return normalizeTeamName(name).split(' ').filter(Boolean);
 }
 
+function levenshteinSimilarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const aa = [...a], bb = [...b];
+  const prev = new Array(bb.length + 1);
+  const curr = new Array(bb.length + 1);
+  for (let j = 0; j <= bb.length; j++) prev[j] = j;
+  for (let i = 1; i <= aa.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= bb.length; j++) {
+      const cost = aa[i - 1] === bb[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= bb.length; j++) prev[j] = curr[j];
+  }
+  return 1 - prev[bb.length] / Math.max(aa.length, bb.length);
+}
+
 function tokenSimilarity(a, b) {
   const aa = new Set(teamTokens(a));
   const bb = new Set(teamTokens(b));
@@ -221,11 +239,7 @@ function tokenSimilarity(a, b) {
   let common = 0;
   for (const x of aa) if (bb.has(x)) common++;
   const union = new Set([...aa, ...bb]).size;
-  const jaccard = union ? common / union : 0;
-  const na = [...aa].join('');
-  const nb = [...bb].join('');
-  const containment = na && nb && (na.includes(nb) || nb.includes(na)) ? 0.25 : 0;
-  return Math.min(1, jaccard + containment);
+  return union ? common / union : 0;
 }
 
 function teamSimilarity(a, b) {
@@ -233,20 +247,25 @@ function teamSimilarity(a, b) {
   const nb = normalizeTeamName(b);
   if (!na || !nb) return 0;
   if (na === nb) return 1;
-  const ta = tokenSimilarity(a, b);
-  if (ta >= 0.75) return ta;
-  if (na.length < 4 || nb.length < 4) return ta;
-  if (na.includes(nb) || nb.includes(na)) return Math.max(ta, 0.82);
-  return ta;
+  const token = tokenSimilarity(a, b);
+  const edit = levenshteinSimilarity(na, nb);
+  const containment = na.includes(nb) || nb.includes(na) ? 0.88 : 0;
+  return Math.min(1, Math.max(token, edit * 0.92, containment));
 }
 
-function matchJoinKey(home, away) {
-  return `${normalizeTeamName(home)}|${normalizeTeamName(away)}`;
+function leagueSimilarity(a, b) {
+  const na = String(a || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const nb = String(b || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (!na || !nb) return 0.5;
+  if (na === nb) return 1;
+  if (na.includes(nb) || nb.includes(na)) return 0.9;
+  return levenshteinSimilarity(na, nb);
 }
 
 function scoreFixtureOddsMatch(fixture, odds) {
   const homeScore = teamSimilarity(fixture.home, odds.home);
   const awayScore = teamSimilarity(fixture.away, odds.away);
+  const leagueScore = leagueSimilarity(fixture.league, odds.league);
   const ft = new Date(fixture.commence).getTime();
   const ot = new Date(odds.commence).getTime();
   if (!Number.isFinite(ft) || !Number.isFinite(ot)) return null;
@@ -255,29 +274,27 @@ function scoreFixtureOddsMatch(fixture, odds) {
   const exactHome = normalizeTeamName(fixture.home) === normalizeTeamName(odds.home);
   const exactAway = normalizeTeamName(fixture.away) === normalizeTeamName(odds.away);
 
-  // Providers can use different kickoff timestamps after reschedules/timezone updates.
-  // An exact team pair is a much stronger identifier than the displayed kickoff minute.
-  if (exactHome && exactAway && diffMin <= 24 * 60) {
-    const timeScore = Math.max(0, 1 - diffMin / (24 * 60));
-    const score = 0.92 + timeScore * 0.08;
-    return { score, homeScore, awayScore, diffMin, confidence: diffMin <= 90 ? 'EXACT' : 'EXACT_TEAMS' };
+  // Exact team pair is the strongest cross-source identity signal.
+  if (exactHome && exactAway && diffMin <= 1440) {
+    const score = 0.90 + Math.max(0, 1 - diffMin / 1440) * 0.10;
+    return { score, homeScore, awayScore, leagueScore, diffMin, confidence: diffMin <= 90 ? 'EXACT' : 'EXACT_TEAMS' };
   }
 
-  // Handle provider-specific names such as "Leuven" vs "OH Leuven".
-  if (homeScore >= 0.82 && awayScore >= 0.82 && diffMin <= 360) {
-    const timeScore = Math.max(0, 1 - diffMin / 360);
-    const score = homeScore * 0.44 + awayScore * 0.44 + timeScore * 0.12;
+  // Fuzzy team names + compatible competition + kickoff proximity.
+  if (homeScore >= 0.80 && awayScore >= 0.80 && diffMin <= 180) {
+    const timeScore = Math.max(0, 1 - diffMin / 180);
+    const score = homeScore * 0.40 + awayScore * 0.40 + leagueScore * 0.08 + timeScore * 0.12;
     if (score >= 0.80) {
-      return { score, homeScore, awayScore, diffMin, confidence: score >= 0.92 ? 'HIGH' : 'MEDIUM' };
+      return { score, homeScore, awayScore, leagueScore, diffMin, confidence: score >= 0.93 ? 'HIGH' : 'MEDIUM' };
     }
   }
 
-  // Close-kickoff fallback for abbreviated provider names.
-  if (diffMin <= 45 && homeScore >= 0.72 && awayScore >= 0.72) {
+  // Short kickoff window for provider abbreviations.
+  if (homeScore >= 0.74 && awayScore >= 0.74 && diffMin <= 45) {
     const timeScore = Math.max(0, 1 - diffMin / 45);
-    const score = homeScore * 0.42 + awayScore * 0.42 + timeScore * 0.16;
-    if (score >= 0.72) {
-      return { score, homeScore, awayScore, diffMin, confidence: score >= 0.90 ? 'HIGH' : 'MEDIUM' };
+    const score = homeScore * 0.39 + awayScore * 0.39 + leagueScore * 0.06 + timeScore * 0.16;
+    if (score >= 0.74) {
+      return { score, homeScore, awayScore, leagueScore, diffMin, confidence: score >= 0.90 ? 'HIGH' : 'MEDIUM' };
     }
   }
 
@@ -287,20 +304,70 @@ function scoreFixtureOddsMatch(fixture, odds) {
 function mergeOddsIntoFixtures(fixtures, oddsMatches) {
   const usedOdds = new Set();
   const merged = [];
+
   for (const fixture of fixtures) {
-    let best = null;
+    const candidates = [];
     for (const odds of oddsMatches) {
       if (usedOdds.has(odds.id)) continue;
       const scored = scoreFixtureOddsMatch(fixture, odds);
-      if (!scored) continue;
-      if (!best || scored.score > best.scored.score) best = { odds, scored };
+      if (scored) candidates.push({ odds, scored });
     }
-    if (best) {
+
+    candidates.sort((a, b) => b.scored.score - a.scored.score);
+    const best = candidates[0];
+    const second = candidates[1];
+    const ambiguous = best && second && (best.scored.score - second.scored.score) < 0.035;
+
+    if (best && !ambiguous) {
       usedOdds.add(best.odds.id);
-      merged.push({ ...fixture, ...best.odds, fixtureSource: `${fixture.fixtureSource || 'Fixture source'} + The Odds API`, fixtureMatch: { confidence: best.scored.confidence, score: Number(best.scored.score.toFixed(3)), homeScore: Number(best.scored.homeScore.toFixed(3)), awayScore: Number(best.scored.awayScore.toFixed(3)), kickoffDiffMin: Number(best.scored.diffMin.toFixed(1)) } });
-    } else merged.push(fixture);
+      const fixtureMatch = {
+        confidence: best.scored.confidence,
+        score: Number(best.scored.score.toFixed(3)),
+        homeScore: Number(best.scored.homeScore.toFixed(3)),
+        awayScore: Number(best.scored.awayScore.toFixed(3)),
+        leagueScore: Number(best.scored.leagueScore.toFixed(3)),
+        kickoffDiffMin: Number(best.scored.diffMin.toFixed(1)),
+        fixtureId: fixture.fixtureMeta?.fixtureId || fixture.fixtureMeta?.eventId || fixture.id,
+        oddsEventId: best.odds.id
+      };
+
+      merged.push({
+        ...fixture,
+        ...best.odds,
+        fixtureSource: `${fixture.fixtureSource || 'Fixture source'} + The Odds API`,
+        fixtureMatch,
+        matchIdentity: {
+          apiFootballId: fixture.fixtureMeta?.fixtureId || null,
+          sofaScoreId: fixture.fixtureMeta?.eventId || null,
+          oddsApiId: best.odds.id,
+          fixtureHome: fixture.home,
+          fixtureAway: fixture.away,
+          oddsHome: best.odds.home,
+          oddsAway: best.odds.away,
+          kickoffDiffMin: fixtureMatch.kickoffDiffMin,
+          score: fixtureMatch.score,
+          confidence: fixtureMatch.confidence
+        }
+      });
+    } else {
+      merged.push({
+        ...fixture,
+        fixtureMatch: ambiguous ? {
+          confidence: 'AMBIGUOUS',
+          score: Number(best.scored.score.toFixed(3)),
+          runnerUpScore: Number(second.scored.score.toFixed(3)),
+          kickoffDiffMin: Number(best.scored.diffMin.toFixed(1))
+        } : null
+      });
+    }
   }
-  for (const odds of oddsMatches) if (!usedOdds.has(odds.id)) merged.push({ ...odds, fixtureSource: 'The Odds API' });
+
+  for (const odds of oddsMatches) {
+    if (!usedOdds.has(odds.id)) {
+      merged.push({ ...odds, fixtureSource: 'The Odds API', fixtureMatch: null });
+    }
+  }
+
   const seen = new Set();
   return merged.filter(m => {
     const key = `${normalizeTeamName(m.home)}|${normalizeTeamName(m.away)}|${Math.round(new Date(m.commence).getTime() / 600000)}`;
@@ -874,7 +941,7 @@ function buildEngine(match, historyRows) {
   }
 
   return {
-    version: '5.5',
+    version: '5.6',
     mode: 'PREMATCH',
     leagueClass: league,
     matchQuality: quality,
@@ -1264,7 +1331,7 @@ async function getOdds(req, res) {
 
   const payload = {
     source: 'The Odds API',
-    version: '5.5',
+    version: '5.6',
     fetchedAt: new Date().toISOString(),
     cached: false,
 
@@ -1295,6 +1362,7 @@ async function getOdds(req, res) {
       matchesWithOdds: withOdds,
       fixtureOnlyMatches: matches.filter(m => !(m.markets?.h2h?.best?.length)).length,
       matchedFixtureOdds: matches.filter(m => m.fixtureSource === 'API-Football + The Odds API' || m.fixtureSource === 'SofaScore + The Odds API').length,
+      ambiguousFixtureMatches: matches.filter(m => m.fixtureMatch?.confidence === 'AMBIGUOUS').length,
       sofaOnlyMatches: matches.filter(m => m.fixtureSource === 'SofaScore').length,
       apiFootballOnlyMatches: matches.filter(m => m.fixtureSource === 'API-Football').length,
       oddsOnlyMatches: matches.filter(m => m.fixtureSource === 'The Odds API').length,
@@ -1302,7 +1370,7 @@ async function getOdds(req, res) {
     },
 
     diagnostics: {
-      version: '5.5',
+      version: '5.6',
       eventsMethod: 'API-Football/SofaScore fixture universe + The Odds API market merge',
       fallbackUsed,
       fixtureSource: fixtureResult.source,
@@ -1315,6 +1383,7 @@ async function getOdds(req, res) {
         withOdds,
         withoutOdds: matches.length - withOdds,
         matchedAcrossSources: matches.filter(m => m.fixtureSource === 'API-Football + The Odds API' || m.fixtureSource === 'SofaScore + The Odds API').length,
+        ambiguous: matches.filter(m => m.fixtureMatch?.confidence === 'AMBIGUOUS').length,
         cappedByMaxMatches: capped
       },
       message: matches.length
@@ -1366,7 +1435,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.5',
+          version: '5.6',
           status: result.status,
           rawSportsCount: raw.length,
           soccerSportsCount: soccer.length,
@@ -1386,7 +1455,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.5',
+          version: '5.6',
           error: e.message
         }));
       }
@@ -1431,7 +1500,7 @@ async function handle(req, res) {
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
         ok: true,
         service: 'BetCore',
-        version: '5.5',
+        version: '5.6',
         apiKeyConfigured: Boolean(API_KEY),
         fixtureSource: FIXTURE_SOURCE,
         apiFootballKeyConfigured: Boolean(API_FOOTBALL_KEY),
@@ -1458,5 +1527,5 @@ const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 
 http.createServer(handle).listen(
   PORT,
-  () => console.log(`BetCore 5.5 running on ${PORT}`)
+  () => console.log(`BetCore 5.6 running on ${PORT}`)
 );
