@@ -69,7 +69,7 @@ function apiGetWithHeaders(urlString, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, {
       headers: {
-        'User-Agent': 'BetCore/5.7.2',
+        'User-Agent': 'BetCore/5.7.3',
         'Accept': 'application/json',
         ...headers
       }
@@ -120,7 +120,7 @@ function fixtureStatusAllowed(event) {
 function apiFootballGet(urlString) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, { headers: {
-      'User-Agent': 'BetCore/5.7.2',
+      'User-Agent': 'BetCore/5.7.3',
       'Accept': 'application/json',
       'x-apisports-key': API_FOOTBALL_KEY
     }}, r => {
@@ -1008,7 +1008,7 @@ function buildEngine(match, historyRows) {
   }
 
   return {
-    version: '5.7.2',
+    version: '5.7.3',
     mode: 'PREMATCH',
     leagueClass: league,
     matchQuality: quality,
@@ -1355,7 +1355,9 @@ async function getOdds(req, res) {
   const fixtureMatches = fixtureResult.events
     .filter(fixtureStatusAllowed)
     .map(e => {
-      if (fixtureResult.source === 'api-football' && e.fixture) {
+      // v5.7.3: fixtureResult may contain BOTH API-Football and SofaScore events.
+      // Detect the provider per event instead of relying on the aggregate source label.
+      if (e?.fixture?.id && e?.teams?.home && e?.teams?.away) {
         return {
           id: `api_football_${e.fixture.id}`,
           sport: 'football',
@@ -1398,7 +1400,7 @@ async function getOdds(req, res) {
 
   const payload = {
     source: 'The Odds API',
-    version: '5.7.2',
+    version: '5.7.3',
     fetchedAt: new Date().toISOString(),
     cached: false,
 
@@ -1437,7 +1439,7 @@ async function getOdds(req, res) {
     },
 
     diagnostics: {
-      version: '5.7.2',
+      version: '5.7.3',
       configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
       effectiveFixtureSource: FIXTURE_SOURCE,
       eventsMethod: 'API-Football/SofaScore fixture universe + The Odds API market merge',
@@ -1504,7 +1506,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.2',
+          version: '5.7.3',
           status: result.status,
           rawSportsCount: raw.length,
           soccerSportsCount: soccer.length,
@@ -1524,7 +1526,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.2',
+          version: '5.7.3',
           error: e.message
         }));
       }
@@ -1569,7 +1571,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.2',
+          version: '5.7.3',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1595,7 +1597,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.2',
+          version: '5.7.3',
           configured: true,
           date,
           httpStatus: r.status,
@@ -1610,7 +1612,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.2',
+          version: '5.7.3',
           configured: true,
           date,
           error: e.message
@@ -1622,7 +1624,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.2',
+          version: '5.7.3',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1648,7 +1650,7 @@ async function handle(req, res) {
 
       const out = {
         ok: true,
-        version: '5.7.2',
+        version: '5.7.3',
         configured: true,
         date,
         season,
@@ -1778,7 +1780,7 @@ async function handle(req, res) {
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
         ok: true,
         service: 'BetCore',
-        version: '5.7.2',
+        version: '5.7.3',
         apiKeyConfigured: Boolean(API_KEY),
         fixtureSource: FIXTURE_SOURCE,
         configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
