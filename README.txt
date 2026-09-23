@@ -13,3 +13,6 @@ Render:
 
 Після деплою перевірити основний /api/odds.
 Очікувана ознака для цього кейсу: fixtureSource може бути SofaScore + The Odds API, а matchedFixtureOdds має збільшитися.
+
+
+v5.7.1 FIX: legacy BETCORE_FIXTURE_SOURCE=oddsapi is treated as auto, so cross-source fixture matching cannot be disabled accidentally. Effective chain: API-Football -> SofaScore fallback -> The Odds API merge.
