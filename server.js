@@ -66,7 +66,7 @@ function apiGetWithHeaders(urlString, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, {
       headers: {
-        'User-Agent': 'BetCore/5.6',
+        'User-Agent': 'BetCore/5.6.2',
         'Accept': 'application/json',
         ...headers
       }
@@ -117,7 +117,7 @@ function fixtureStatusAllowed(event) {
 function apiFootballGet(urlString) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, { headers: {
-      'User-Agent': 'BetCore/5.6',
+      'User-Agent': 'BetCore/5.6.2',
       'Accept': 'application/json',
       'x-apisports-key': API_FOOTBALL_KEY
     }}, r => {
@@ -1546,6 +1546,162 @@ async function handle(req, res) {
           date,
           error: e.message
         }));
+      }
+    }
+
+    if (u.pathname === '/api/diagnostics/api-football-match') {
+      if (!API_FOOTBALL_KEY) {
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
+          ok: false,
+          version: '5.6.2',
+          configured: false,
+          message: 'API_FOOTBALL_KEY не налаштований'
+        }));
+      }
+
+      const date = u.searchParams.get('date') || kyivDate(0);
+      const targetHome = u.searchParams.get('home') || 'OH Leuven';
+      const targetAway = u.searchParams.get('away') || 'AS Roma';
+      const season = Number(u.searchParams.get('season') || String(date).slice(0, 4));
+      const normalize = value => String(value || '')
+        .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const similarity = (a, b) => {
+        const aa = normalize(a), bb = normalize(b);
+        if (!aa || !bb) return 0;
+        if (aa === bb) return 1;
+        if (aa.includes(bb) || bb.includes(aa)) return 0.95;
+        const aTokens = new Set(aa.split(/\\s+/));
+        const bTokens = new Set(bb.split(/\\s+/));
+        const inter = [...aTokens].filter(x => bTokens.has(x)).length;
+        return inter / Math.max(aTokens.size, bTokens.size, 1);
+      };
+
+      const out = {
+        ok: true,
+        version: '5.6.2',
+        configured: true,
+        date,
+        season,
+        target: { home: targetHome, away: targetAway },
+        steps: []
+      };
+
+      try {
+        const teamUrl = `${API_FOOTBALL_BASE}/teams?search=${encodeURIComponent(targetHome)}`;
+        const teamR = await apiFootballGet(teamUrl);
+        const teams = Array.isArray(teamR.data?.response) ? teamR.data.response : [];
+        const teamCandidates = teams.map(x => ({
+          id: x.team?.id || null,
+          name: x.team?.name || null,
+          country: x.team?.country || null,
+          similarity: similarity(x.team?.name, targetHome)
+        })).sort((a, b) => b.similarity - a.similarity);
+        out.steps.push({
+          stage: 'team_search',
+          query: targetHome,
+          httpStatus: teamR.status,
+          responseCount: teamCandidates.length,
+          candidates: teamCandidates.slice(0, 10)
+        });
+
+        const selectedTeam = teamCandidates[0];
+        if (selectedTeam?.id) {
+          const fixturesUrl = `${API_FOOTBALL_BASE}/fixtures?team=${selectedTeam.id}&from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}&season=${season}&timezone=Europe%2FKyiv`;
+          const fixturesR = await apiFootballGet(fixturesUrl);
+          const fixtures = Array.isArray(fixturesR.data?.response) ? fixturesR.data.response : [];
+          const normalizedFixtures = fixtures.map(x => ({
+            fixtureId: x.fixture?.id || null,
+            status: x.fixture?.status?.short || null,
+            date: x.fixture?.date || null,
+            leagueId: x.league?.id || null,
+            league: x.league?.name || null,
+            country: x.league?.country || null,
+            season: x.league?.season || null,
+            home: x.teams?.home?.name || null,
+            away: x.teams?.away?.name || null,
+            homeSimilarity: similarity(x.teams?.home?.name, targetHome),
+            awaySimilarity: similarity(x.teams?.away?.name, targetAway),
+            targetMatch: similarity(x.teams?.home?.name, targetHome) >= 0.7 && similarity(x.teams?.away?.name, targetAway) >= 0.7
+          }));
+          out.steps.push({
+            stage: 'team_fixtures',
+            teamId: selectedTeam.id,
+            teamName: selectedTeam.name,
+            httpStatus: fixturesR.status,
+            responseCount: normalizedFixtures.length,
+            apiErrors: Array.isArray(fixturesR.data?.errors) ? fixturesR.data.errors : [],
+            fixtures: normalizedFixtures.slice(0, 30)
+          });
+        }
+
+        const teamFixtureStep = out.steps.find(x => x.stage === 'team_fixtures');
+        const found = teamFixtureStep?.fixtures?.find(x => x.targetMatch);
+
+        if (!found) {
+          const leagueUrl = `${API_FOOTBALL_BASE}/leagues?search=${encodeURIComponent("UEFA Women's Champions League")}&season=${season}`;
+          const leagueR = await apiFootballGet(leagueUrl);
+          const leagues = Array.isArray(leagueR.data?.response) ? leagueR.data.response : [];
+          const leagueCandidates = leagues.map(x => ({
+            id: x.league?.id || null,
+            name: x.league?.name || null,
+            country: x.country?.name || null,
+            season: x.seasons?.find?.(s => Number(s.year) === season)?.year || null,
+            type: x.league?.type || null
+          }));
+          out.steps.push({
+            stage: 'league_search',
+            httpStatus: leagueR.status,
+            responseCount: leagueCandidates.length,
+            candidates: leagueCandidates.slice(0, 10)
+          });
+
+          const league = leagueCandidates[0];
+          if (league?.id) {
+            const leagueFixturesUrl = `${API_FOOTBALL_BASE}/fixtures?league=${league.id}&season=${season}&from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}&timezone=Europe%2FKyiv`;
+            const leagueFixturesR = await apiFootballGet(leagueFixturesUrl);
+            const leagueFixtures = Array.isArray(leagueFixturesR.data?.response) ? leagueFixturesR.data.response : [];
+            const normalizedLeagueFixtures = leagueFixtures.map(x => ({
+              fixtureId: x.fixture?.id || null,
+              date: x.fixture?.date || null,
+              status: x.fixture?.status?.short || null,
+              leagueId: x.league?.id || null,
+              league: x.league?.name || null,
+              home: x.teams?.home?.name || null,
+              away: x.teams?.away?.name || null,
+              homeSimilarity: similarity(x.teams?.home?.name, targetHome),
+              awaySimilarity: similarity(x.teams?.away?.name, targetAway),
+              targetMatch: similarity(x.teams?.home?.name, targetHome) >= 0.7 && similarity(x.teams?.away?.name, targetAway) >= 0.7
+            }));
+            out.steps.push({
+              stage: 'league_fixtures',
+              leagueId: league.id,
+              leagueName: league.name,
+              httpStatus: leagueFixturesR.status,
+              responseCount: normalizedLeagueFixtures.length,
+              apiErrors: Array.isArray(leagueFixturesR.data?.errors) ? leagueFixturesR.data.errors : [],
+              fixtures: normalizedLeagueFixtures.slice(0, 30)
+            });
+          }
+        }
+
+        const allFixtureSteps = out.steps.filter(x => x.stage === 'team_fixtures' || x.stage === 'league_fixtures');
+        const matchingFixtures = allFixtureSteps.flatMap(x => x.fixtures || []).filter(x => x.targetMatch);
+        out.result = {
+          matchFound: matchingFixtures.length > 0,
+          matches: matchingFixtures.slice(0, 10),
+          requestsUsed: out.steps.length
+        };
+        out.rawHeaders = {
+          remaining: teamR.headers['x-ratelimit-requests-remaining'] ?? teamR.headers['x-ratelimit-remaining'] ?? null,
+          used: teamR.headers['x-ratelimit-requests-used'] ?? null
+        };
+
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(out));
+      } catch (e) {
+        out.ok = false;
+        out.error = e.message;
+        return send(res, 502, 'application/json; charset=utf-8', JSON.stringify(out));
       }
     }
 
