@@ -1496,6 +1496,59 @@ async function handle(req, res) {
       }));
     }
 
+    if (u.pathname === '/api/diagnostics/api-football') {
+      if (!API_FOOTBALL_KEY) {
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
+          ok: false,
+          version: '5.6.1',
+          configured: false,
+          message: 'API_FOOTBALL_KEY не налаштований'
+        }));
+      }
+
+      const date = u.searchParams.get('date') || kyivDate(0);
+
+      try {
+        const endpoint = `${API_FOOTBALL_BASE}/fixtures?date=${encodeURIComponent(date)}&timezone=Europe%2FKyiv`;
+        const r = await apiFootballGet(endpoint);
+        const response = Array.isArray(r.data?.response) ? r.data.response : [];
+        const errors = Array.isArray(r.data?.errors) ? r.data.errors : [];
+
+        const normalized = response.map(x => ({
+          fixtureId: x.fixture?.id || null,
+          status: x.fixture?.status?.short || null,
+          date: x.fixture?.date || null,
+          league: x.league?.name || null,
+          country: x.league?.country || null,
+          home: x.teams?.home?.name || null,
+          away: x.teams?.away?.name || null
+        }));
+
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
+          ok: true,
+          version: '5.6.1',
+          configured: true,
+          date,
+          httpStatus: r.status,
+          responseCount: normalized.length,
+          apiErrors: errors,
+          sample: normalized.slice(0, 15),
+          rawHeaders: {
+            remaining: r.headers['x-ratelimit-requests-remaining'] ?? r.headers['x-ratelimit-remaining'] ?? null,
+            used: r.headers['x-ratelimit-requests-used'] ?? null
+          }
+        }));
+      } catch (e) {
+        return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
+          ok: false,
+          version: '5.6.1',
+          configured: true,
+          date,
+          error: e.message
+        }));
+      }
+    }
+
     if (u.pathname === '/health') {
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
         ok: true,
