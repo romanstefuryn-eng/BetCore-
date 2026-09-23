@@ -16,3 +16,6 @@ Render:
 
 
 v5.7.1 FIX: legacy BETCORE_FIXTURE_SOURCE=oddsapi is treated as auto, so cross-source fixture matching cannot be disabled accidentally. Effective chain: API-Football -> SofaScore fallback -> The Odds API merge.
+
+
+v5.7.2: AUTO mode collects API-Football and SofaScore fixture universes together; provider gaps no longer suppress cross-source matching.

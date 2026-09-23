@@ -69,7 +69,7 @@ function apiGetWithHeaders(urlString, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, {
       headers: {
-        'User-Agent': 'BetCore/5.7.1',
+        'User-Agent': 'BetCore/5.7.2',
         'Accept': 'application/json',
         ...headers
       }
@@ -120,7 +120,7 @@ function fixtureStatusAllowed(event) {
 function apiFootballGet(urlString) {
   return new Promise((resolve, reject) => {
     const req = https.get(urlString, { headers: {
-      'User-Agent': 'BetCore/5.7.1',
+      'User-Agent': 'BetCore/5.7.2',
       'Accept': 'application/json',
       'x-apisports-key': API_FOOTBALL_KEY
     }}, r => {
@@ -220,22 +220,46 @@ async function getFixtureUniverse(mode) {
   events.push(...first.collected);
   errors.push(...first.localErrors);
 
-  // AUTO: API-Football remains preferred, but a zero-fixture result triggers
-  // SofaScore fallback so coverage gaps do not remove the fixture universe.
-  const shouldFallback = FIXTURE_SOURCE === 'auto' &&
-    preferred === 'api-football' && events.length === 0;
+  // v5.7.2: In AUTO mode, do not wait for the entire fixture universe to be empty.
+  // API-Football can return many fixtures while still missing a specific competition.
+  // Therefore collect SofaScore as a second fixture source as well and merge both
+  // universes before Match Matching 2.0. This makes the fallback work per coverage gap.
   let source = preferred;
   let fallbackUsed = false;
 
-  if (shouldFallback) {
-    const second = await collect('sofascore');
+  if (FIXTURE_SOURCE === 'auto') {
+    const secondSource = preferred === 'api-football' ? 'sofascore' : 'api-football';
+    const second = await collect(secondSource);
     if (second.collected.length) {
       events.push(...second.collected);
-      source = 'sofascore-fallback';
+      source = `${preferred}+${secondSource}`;
       fallbackUsed = true;
     }
     errors.push(...second.localErrors);
   }
+
+  // De-duplicate identical fixtures across providers before matching.
+  const unique = new Map();
+  for (const event of events) {
+    const home = normalizeTeamName(
+      event?.teams?.home?.name || event?.homeTeam?.name || event?.homeTeam?.shortName || ''
+    );
+    const away = normalizeTeamName(
+      event?.teams?.away?.name || event?.awayTeam?.name || event?.awayTeam?.shortName || ''
+    );
+    const kickoff = event?.fixture?.date ||
+      (Number.isFinite(Number(event?.startTimestamp)) ? new Date(Number(event.startTimestamp) * 1000).toISOString() : '');
+    const key = `${home}|${away}|${Math.round(new Date(kickoff).getTime() / 600000)}`;
+    if (!home || !away || key.includes('NaN')) {
+      unique.set(`raw:${unique.size}`, event);
+      continue;
+    }
+    if (!unique.has(key)) unique.set(key, event);
+  }
+  const finalEvents = [...unique.values()];
+
+  fixtureCache = { key, at: Date.now(), data: finalEvents, errors, source, fallbackUsed };
+  return { events: finalEvents, errors, source, fallbackUsed };
 
   fixtureCache = { key, at: Date.now(), data: events, errors, source, fallbackUsed };
   return { events, errors, source, fallbackUsed };
@@ -984,7 +1008,7 @@ function buildEngine(match, historyRows) {
   }
 
   return {
-    version: '5.7.1',
+    version: '5.7.2',
     mode: 'PREMATCH',
     leagueClass: league,
     matchQuality: quality,
@@ -1374,7 +1398,7 @@ async function getOdds(req, res) {
 
   const payload = {
     source: 'The Odds API',
-    version: '5.7.1',
+    version: '5.7.2',
     fetchedAt: new Date().toISOString(),
     cached: false,
 
@@ -1413,7 +1437,7 @@ async function getOdds(req, res) {
     },
 
     diagnostics: {
-      version: '5.7.1',
+      version: '5.7.2',
       configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
       effectiveFixtureSource: FIXTURE_SOURCE,
       eventsMethod: 'API-Football/SofaScore fixture universe + The Odds API market merge',
@@ -1480,7 +1504,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.1',
+          version: '5.7.2',
           status: result.status,
           rawSportsCount: raw.length,
           soccerSportsCount: soccer.length,
@@ -1500,7 +1524,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.1',
+          version: '5.7.2',
           error: e.message
         }));
       }
@@ -1545,7 +1569,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.1',
+          version: '5.7.2',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1571,7 +1595,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.1',
+          version: '5.7.2',
           configured: true,
           date,
           httpStatus: r.status,
@@ -1586,7 +1610,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.1',
+          version: '5.7.2',
           configured: true,
           date,
           error: e.message
@@ -1598,7 +1622,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.1',
+          version: '5.7.2',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1624,7 +1648,7 @@ async function handle(req, res) {
 
       const out = {
         ok: true,
-        version: '5.7.1',
+        version: '5.7.2',
         configured: true,
         date,
         season,
@@ -1754,7 +1778,7 @@ async function handle(req, res) {
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
         ok: true,
         service: 'BetCore',
-        version: '5.7.1',
+        version: '5.7.2',
         apiKeyConfigured: Boolean(API_KEY),
         fixtureSource: FIXTURE_SOURCE,
         configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
