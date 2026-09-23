@@ -1,21 +1,16 @@
-BetCore v5.7 — SofaScore fallback
+BetCore v5.7.4 — Odds API diagnostic
 
-Що змінено:
-- У режимі BETCORE_FIXTURE_SOURCE=auto спочатку використовується API-Football.
-- Якщо API-Football повертає 0 матчів за весь вибраний горизонт, автоматично запускається SofaScore.
-- У payload diagnostics відображається fallbackUsed та фактичне джерело fixture universe.
-- Match Matching 2.0, History Engine та Selection Engine залишені без зміни.
+Ця версія не змінює логіку BETCORE. Додано діагностику The Odds API.
 
-Render:
-- ODDS_API_KEY: залишити як є.
-- API_FOOTBALL_KEY: залишити як є.
-- BETCORE_FIXTURE_SOURCE: auto (рекомендовано).
+Після деплою відкрий:
+/api/diagnostics/odds?horizon=7d&home=Leuven&away=AS%20Roma
 
-Після деплою перевірити основний /api/odds.
-Очікувана ознака для цього кейсу: fixtureSource може бути SofaScore + The Odds API, а matchedFixtureOdds має збільшитися.
+Endpoint показує:
+- скільки soccer-спортів бачить The Odds API;
+- які жіночі/Champions League soccer-ключі доступні;
+- скільки подій повертає /events;
+- чи знаходить Leuven / AS Roma;
+- який sport key використано для прямого /odds-запиту;
+- HTTP status, кількість подій і quota.
 
-
-v5.7.1 FIX: legacy BETCORE_FIXTURE_SOURCE=oddsapi is treated as auto, so cross-source fixture matching cannot be disabled accidentally. Effective chain: API-Football -> SofaScore fallback -> The Odds API merge.
-
-
-v5.7.2: AUTO mode collects API-Football and SofaScore fixture universes together; provider gaps no longer suppress cross-source matching.
+ODDS_API_KEY у чат не вставляти.

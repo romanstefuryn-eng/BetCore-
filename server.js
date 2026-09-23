@@ -1008,7 +1008,7 @@ function buildEngine(match, historyRows) {
   }
 
   return {
-    version: '5.7.3',
+    version: '5.7.4',
     mode: 'PREMATCH',
     leagueClass: league,
     matchQuality: quality,
@@ -1400,7 +1400,7 @@ async function getOdds(req, res) {
 
   const payload = {
     source: 'The Odds API',
-    version: '5.7.3',
+    version: '5.7.4',
     fetchedAt: new Date().toISOString(),
     cached: false,
 
@@ -1439,7 +1439,7 @@ async function getOdds(req, res) {
     },
 
     diagnostics: {
-      version: '5.7.3',
+      version: '5.7.4',
       configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
       effectiveFixtureSource: FIXTURE_SOURCE,
       eventsMethod: 'API-Football/SofaScore fixture universe + The Odds API market merge',
@@ -1506,7 +1506,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.3',
+          version: '5.7.4',
           status: result.status,
           rawSportsCount: raw.length,
           soccerSportsCount: soccer.length,
@@ -1526,8 +1526,134 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.3',
+          version: '5.7.4',
           error: e.message
+        }));
+      }
+    }
+
+    if (u.pathname === '/api/diagnostics/odds') {
+      if (!API_KEY) {
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
+          ok: false,
+          version: '5.7.4',
+          configured: false,
+          message: 'ODDS_API_KEY не налаштований'
+        }));
+      }
+
+      const horizon = u.searchParams.get('horizon') || '7d';
+      const targetHome = u.searchParams.get('home') || 'Leuven';
+      const targetAway = u.searchParams.get('away') || 'AS Roma';
+      const { from, to } = horizonWindow(horizon);
+      const out = {
+        ok: true,
+        version: '5.7.4',
+        configured: true,
+        target: { home: targetHome, away: targetAway },
+        requested: { horizon, from, to, regions: 'eu', markets: 'h2h' },
+        sports: { status: null, total: 0, soccer: 0, candidates: [] },
+        eventDiscovery: { checked: 0, nonEmpty: 0, totalEvents: 0, targetEvents: [], samples: [], errors: [] },
+        oddsProbe: { attempted: false, sport: null, status: null, eventCount: 0, targetEvents: [], errors: [], quota: {} },
+        quota: {}
+      };
+
+      try {
+        const sportsUrl = `${ODDS_API_BASE}/sports?all=true&apiKey=${encodeURIComponent(API_KEY)}`;
+        const sr = await apiGet(sportsUrl);
+        const rawSports = Array.isArray(sr.data) ? sr.data : [];
+        const sports = rawSports.map(s => ({ ...s, sport_key: s.sport_key || s.key || '' }));
+        const soccer = selectSoccerSports(sports);
+        out.sports.status = sr.status;
+        out.sports.total = sports.length;
+        out.sports.soccer = soccer.length;
+        out.quota = {
+          remaining: sr.headers['x-requests-remaining'] ?? null,
+          used: sr.headers['x-requests-used'] ?? null
+        };
+        out.sports.candidates = soccer
+          .filter(s => /champions league|women|uwcl|uefa/i.test(`${s.title || ''} ${s.sport_key || ''}`))
+          .slice(0, 30)
+          .map(s => ({ key: s.sport_key, title: s.title, group: s.group, active: s.active }));
+
+        const discoveryTargets = soccer.slice(0, Math.max(MAX_ODDS_SPORTS, 40));
+        out.eventDiscovery.checked = discoveryTargets.length;
+        const targetNeedle = `${targetHome} ${targetAway}`.toLowerCase();
+
+        for (let i = 0; i < discoveryTargets.length; i += 6) {
+          const batch = discoveryTargets.slice(i, i + 6);
+          const results = await Promise.all(batch.map(async sp => {
+            try {
+              const r = await requestEvents(sp.sport_key, from, to);
+              const events = Array.isArray(r.data) ? r.data : [];
+              return { sp, r, events };
+            } catch (e) {
+              return { sp, error: e.message };
+            }
+          }));
+          for (const x of results) {
+            if (x.error) {
+              out.eventDiscovery.errors.push({ sport: x.sp.sport_key, title: x.sp.title, error: x.error });
+              continue;
+            }
+            if (x.events.length) out.eventDiscovery.nonEmpty += 1;
+            out.eventDiscovery.totalEvents += x.events.length;
+            for (const e of x.events) {
+              const text = `${e.home_team || ''} ${e.away_team || ''}`.toLowerCase();
+              if (text.includes(String(targetHome).toLowerCase()) || text.includes(String(targetAway).toLowerCase()) ||
+                  (text.includes('leuven') && text.includes('roma'))) {
+                out.eventDiscovery.targetEvents.push({
+                  id: e.id, sportKey: e.sport_key, sportTitle: x.sp.title,
+                  commence: e.commence_time, home: e.home_team, away: e.away_team
+                });
+              }
+            }
+            if (out.eventDiscovery.samples.length < 20 && x.events.length) {
+              out.eventDiscovery.samples.push(...x.events.slice(0, 3).map(e => ({
+                id: e.id, sportKey: e.sport_key, sportTitle: x.sp.title,
+                commence: e.commence_time, home: e.home_team, away: e.away_team
+              })));
+            }
+          }
+          if (out.eventDiscovery.targetEvents.length) break;
+        }
+
+        let probeSport = out.eventDiscovery.targetEvents[0]?.sportKey || null;
+        if (!probeSport) {
+          const candidate = soccer.find(s => /champions league.*women|women.*champions league|uwcl/i.test(`${s.title || ''} ${s.sport_key || ''}`));
+          probeSport = candidate?.sport_key || null;
+        }
+
+        if (probeSport) {
+          out.oddsProbe.attempted = true;
+          out.oddsProbe.sport = probeSport;
+          try {
+            const r = await requestOdds(probeSport, 'eu', 'h2h', from, to);
+            const events = Array.isArray(r.data) ? r.data : [];
+            out.oddsProbe.status = r.status;
+            out.oddsProbe.eventCount = events.length;
+            out.oddsProbe.targetEvents = events.filter(e => {
+              const text = `${e.home_team || ''} ${e.away_team || ''}`.toLowerCase();
+              return text.includes(String(targetHome).toLowerCase()) || text.includes(String(targetAway).toLowerCase()) ||
+                     (text.includes('leuven') && text.includes('roma'));
+            }).slice(0, 10).map(e => ({ id: e.id, sportKey: e.sport_key, commence: e.commence_time, home: e.home_team, away: e.away_team, bookmakers: (e.bookmakers || []).length }));
+            out.oddsProbe.quota = {
+              remaining: r.headers['x-requests-remaining'] ?? null,
+              used: r.headers['x-requests-used'] ?? null
+            };
+          } catch (e) {
+            out.oddsProbe.errors.push(e.message);
+          }
+        }
+
+        return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(out));
+      } catch (e) {
+        return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
+          ok: false,
+          version: '5.7.4',
+          configured: true,
+          error: e.message,
+          diagnostics: out
         }));
       }
     }
@@ -1571,7 +1697,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.3',
+          version: '5.7.4',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1597,7 +1723,7 @@ async function handle(req, res) {
 
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: true,
-          version: '5.7.3',
+          version: '5.7.4',
           configured: true,
           date,
           httpStatus: r.status,
@@ -1612,7 +1738,7 @@ async function handle(req, res) {
       } catch (e) {
         return send(res, 502, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.3',
+          version: '5.7.4',
           configured: true,
           date,
           error: e.message
@@ -1624,7 +1750,7 @@ async function handle(req, res) {
       if (!API_FOOTBALL_KEY) {
         return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
           ok: false,
-          version: '5.7.3',
+          version: '5.7.4',
           configured: false,
           message: 'API_FOOTBALL_KEY не налаштований'
         }));
@@ -1650,7 +1776,7 @@ async function handle(req, res) {
 
       const out = {
         ok: true,
-        version: '5.7.3',
+        version: '5.7.4',
         configured: true,
         date,
         season,
@@ -1780,7 +1906,7 @@ async function handle(req, res) {
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify({
         ok: true,
         service: 'BetCore',
-        version: '5.7.3',
+        version: '5.7.4',
         apiKeyConfigured: Boolean(API_KEY),
         fixtureSource: FIXTURE_SOURCE,
         configuredFixtureSource: CONFIGURED_FIXTURE_SOURCE,
